@@ -13628,7 +13628,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
          * would silently discard the newer conversation state. */
         kv_cache_store_current(s, slot, "evict");
     }
-    if (!multimodal && cached == 0) {
+    if (cached == 0) {
         disk_cached = kv_cache_try_load(s, slot, &j->req, &effective_prompt,
                                         &disk_cache_path,
                                         &disk_cache_ext_flags);
