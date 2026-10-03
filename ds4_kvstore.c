@@ -1217,7 +1217,7 @@ bool ds4_kvstore_store_live_prefix(ds4_kvstore *kc,
                                    size_t err_len) {
     return ds4_kvstore_store_live_prefix_text(kc, engine, session, tokens,
                                               store_len, reason, NULL, 0, NULL,
-                                              hooks, err, err_len);
+                                              NULL, 0, hooks, err, err_len);
 }
 
 bool ds4_kvstore_maybe_store_continued(ds4_kvstore *kc,
