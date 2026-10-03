@@ -11303,7 +11303,10 @@ static bool kv_cache_store_live_prefix(server *s, server_slot *slot,
                                        const ds4_tokens *tokens,
                                        int store_len, const char *reason) {
     return kv_cache_store_live_prefix_text(s, slot, tokens, store_len, reason,
-                                           NULL, 0, NULL);
+                                           NULL, 0, NULL,
+                                           slot->vision_count ?
+                                               &slot->vision_fingerprints[0][0] : NULL,
+                                           slot->vision_count);
 }
 
 static void kv_cache_store_current(server *s, server_slot *slot,
