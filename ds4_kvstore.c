@@ -1412,6 +1412,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
     }
     free(cached_text);
     free(path);
+    free(tagged_prompt);
     return loaded;
 }
 
