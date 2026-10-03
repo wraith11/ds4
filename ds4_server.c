@@ -13074,6 +13074,7 @@ static void canonicalize_tool_checkpoint(server *s, server_slot *slot,
         ds4_tokens effective = {0};
         int loaded = kv_cache_try_load_text(s, slot,
                                             rendered.ptr ? rendered.ptr : "",
+                                            NULL, 0,
                                             &effective, &path, NULL, false);
         if (loaded == 0) {
             pthread_mutex_lock(&s->inference_mu);
