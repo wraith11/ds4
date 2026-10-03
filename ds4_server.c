@@ -12459,6 +12459,9 @@ static int server_session_sync(server *s, server_slot *slot,
                                const ds4_tokens *prompt,
                                char *err, size_t errlen) {
     if (!s || !slot || !prompt) return 1;
+    /* A text-only request clears any remembered image fingerprints so a
+     * text checkpoint is not tagged with stale vision identity. */
+    slot->vision_count = 0;
     if (!s->batched_mode) {
         if (!server_prefill_enter(s, slot)) return DS4_SESSION_SYNC_INTERRUPTED;
         int rc = ds4_session_sync(slot->session, prompt, err, errlen);
