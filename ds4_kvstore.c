@@ -1339,7 +1339,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                 if (strcmp(text_sha, e.sha)) {
                     header_ok = false;
                     fail_reason = "cached text hash mismatch";
-                } else if (!ds4_kvstore_byte_prefix_match(prompt_text, prompt_bytes,
+                } else if (!ds4_kvstore_byte_prefix_match(lookup_text, prompt_bytes,
                                                           cached_text, text_bytes)) {
                     header_ok = false;
                     fail_reason = "cached text prefix mismatch";
