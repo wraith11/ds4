@@ -7189,9 +7189,19 @@ typedef struct {
     openai_tool_stream tool;
 } openai_stream;
 
+/* The second-reasoning guard was introduced for the escaped second reasoning
+ * pass reported in issue #678, which was measured on Anthropic streaming with
+ * legacy DeepSeek formatting. On OpenAI-compatible streams it cannot
+ * distinguish a real answer from an unmarked second reasoning pass, so it
+ * holds all answer text until a close marker, tool marker, or the final update
+ * -- turning a live stream into one final chunk (issue #1076). Restrict the
+ * guard to the combination it protects: Anthropic API with legacy DeepSeek
+ * syntax. OpenAI-compatible streams emit answer text immediately; modern
+ * DeepSeek 4.1, GLM, and Qwen stream normally on Anthropic too. */
 static bool stream_needs_second_reasoning_guard(const request *r) {
     return ds4_think_mode_enabled(r->think_mode) && r->has_tools &&
-           r->model_syntax != SERVER_MODEL_SYNTAX_QWEN;
+           r->api == API_ANTHROPIC &&
+           r->model_syntax == SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
 static void openai_stream_start(const request *r, openai_stream *st) {
