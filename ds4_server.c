@@ -11472,7 +11472,16 @@ static int kv_cache_try_load(server *s, server_slot *slot, const request *req,
                              ds4_tokens *effective_prompt,
                              char **loaded_path_out,
                              uint8_t *loaded_ext_flags_out) {
+    /* Tag the disk cache key with the request's image fingerprints so a
+     * vision checkpoint is only loaded for the exact same images. */
+    const uint8_t *fp = NULL;
+    size_t fcount = 0;
+    if (req && req->image_count > 0 && req->images) {
+        fp = &req->images[0].embedding.fingerprint[0];
+        fcount = req->image_count;
+    }
     return kv_cache_try_load_text(s, slot, req ? req->prompt_text : NULL,
+                                  fp, fcount,
                                   effective_prompt,
                                   loaded_path_out,
                                   loaded_ext_flags_out,
