@@ -926,6 +926,35 @@ static void kv_cache_rewrite_trailer(ds4_kvstore *kc, const char *path,
     (void)ok;
 }
 
+/* Build a deterministic fingerprint tag from the vision image fingerprints.
+ * The disk KV cache key is derived from the rendered text, which carries no
+ * image identity. Two requests with different images but the same text would
+ * otherwise share a cache entry and produce a wrong cache hit. Embedding the
+ * image fingerprints into the key makes the checkpoint image-specific: the
+ * same text plus the same image yields the same key, while a different image
+ * yields a different key. Returns a heap string (caller frees) or NULL when
+ * there are no images to tag. */
+static char *ds4_kvstore_vision_fingerprint_tag(const uint8_t *fingerprints,
+                                                size_t vision_count) {
+    if (!fingerprints || vision_count == 0) return NULL;
+    /* 32 hex chars per fingerprint plus a separator per entry. */
+    size_t cap = 1 + vision_count * (32 + 1);
+    char *tag = kv_xmalloc(cap);
+    size_t pos = 0;
+    tag[pos++] = '|';
+    for (size_t i = 0; i < vision_count; i++) {
+        if (i > 0) tag[pos++] = ',';
+        static const char hex[] = "0123456789abcdef";
+        for (size_t j = 0; j < 32; j++) {
+            uint8_t b = fingerprints[i * 32 + j];
+            tag[pos++] = hex[b >> 4];
+            tag[pos++] = hex[b & 0x0f];
+        }
+    }
+    tag[pos] = '\0';
+    return tag;
+}
+
 bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
                                         ds4_engine *engine,
                                         ds4_session *session,
