@@ -13831,7 +13831,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                req_flags,
                now_sec() - t0);
     if (cold_store_len == prompt_for_sync->len) {
-        if (!multimodal && kv_cache_store_live_prefix(s, slot, prompt_for_sync,
+        if (kv_cache_store_live_prefix(s, slot, prompt_for_sync,
                                        cold_store_len, "cold")) {
             kv_cache_slot_note_store(slot, cold_store_len);
             suppressed_continued_last = -1;
