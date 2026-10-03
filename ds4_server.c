@@ -12513,6 +12513,12 @@ static int server_session_sync_multimodal(server *s, server_slot *slot,
     if (!image_count)
         return server_session_sync(s, slot, prompt, err, errlen);
     if (!s || !slot || !prompt || !images) return 1;
+    /* Remember the image fingerprints so the disk KV cache key can be tagged
+     * with the image identity when this slot's checkpoint is persisted. */
+    slot->vision_count = image_count > 16 ? 16 : image_count;
+    for (size_t i = 0; i < slot->vision_count; i++) {
+        memcpy(slot->vision_fingerprints[i], images[i].embedding.fingerprint, 32);
+    }
     if (!s->batched_mode) {
         if (!server_prefill_enter(s, slot)) return DS4_SESSION_SYNC_INTERRUPTED;
         int rc = ds4_session_sync_multimodal(slot->session, prompt,
