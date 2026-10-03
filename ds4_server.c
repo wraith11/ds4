@@ -11445,15 +11445,18 @@ static int kv_cache_try_load_text(server *s, server_slot *slot,
     ds4_kvstore_load_result lr = {0};
     ds4_kvstore_trailer_hooks hooks = kv_cache_tool_map_hooks(s, NULL);
     pthread_mutex_lock(&s->inference_mu);
-    /* Disk payloads intentionally carry no image identity. If this slot held
-     * vision state, discard it before restoring a text-only checkpoint so the
-     * next sync does not reject the fresh payload as a stale image match. */
-    if (ds4_session_has_vision_state(slot->session)) {
-        ds4_session_invalidate(slot->session);
-    }
+    /* The disk key is tagged with image fingerprints, so restoring a vision
+     * checkpoint is only valid for the exact same images. The session is
+     * invalidated below only when a text-only checkpoint is restored onto a
+     * slot that held vision state; otherwise the fingerprint-tagged key keeps
+     * the match image-specific. */
     pthread_mutex_lock(&s->kv_mu);
     int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, slot->session,
-                                           prompt_text, effective_prompt, &lr,
+                                           prompt_text,
+                                           slot->vision_count ?
+                                               &slot->vision_fingerprints[0][0] : NULL,
+                                           slot->vision_count,
+                                           effective_prompt, &lr,
                                            &hooks, responses_protocol);
     pthread_mutex_unlock(&s->kv_mu);
     pthread_mutex_unlock(&s->inference_mu);
