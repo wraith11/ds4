@@ -1277,13 +1277,35 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
     if (result) memset(result, 0, sizeof(*result));
     if (effective_prompt) effective_prompt->len = 0;
     if (!kc->enabled || !prompt_text) return 0;
+    /* Append the same image fingerprint tag used at store time so the lookup
+     * only matches a checkpoint written for the exact same images. */
+    char *fp_tag = ds4_kvstore_vision_fingerprint_tag(vision_fingerprints,
+                                                      vision_count);
+    char *tagged_prompt = NULL;
+    const char *lookup_text = prompt_text;
+    size_t lookup_len = strlen(prompt_text);
+    if (fp_tag) {
+        tagged_prompt = kv_xmalloc(lookup_len + strlen(fp_tag) + 1);
+        memcpy(tagged_prompt, prompt_text, lookup_len);
+        memcpy(tagged_prompt + lookup_len, fp_tag, strlen(fp_tag));
+        tagged_prompt[lookup_len + strlen(fp_tag)] = '\0';
+        lookup_text = tagged_prompt;
+        lookup_len += strlen(fp_tag);
+        free(fp_tag);
+    }
     const int quant_bits = ds4_engine_routed_quant_bits(engine);
-    if (!ds4_kvstore_quant_bits_supported(quant_bits)) return 0;
+    if (!ds4_kvstore_quant_bits_supported(quant_bits)) {
+        free(tagged_prompt);
+        return 0;
+    }
     const int model_id = ds4_engine_model_id(engine);
-    const size_t prompt_bytes = strlen(prompt_text);
-    int idx = ds4_kvstore_find_text_prefix(kc, prompt_text, model_id, quant_bits,
+    const size_t prompt_bytes = lookup_len;
+    int idx = ds4_kvstore_find_text_prefix(kc, lookup_text, model_id, quant_bits,
                                            ds4_session_ctx(session));
-    if (idx < 0) return 0;
+    if (idx < 0) {
+        free(tagged_prompt);
+        return 0;
+    }
 
     ds4_kvstore_entry e = kc->entry[idx];
     char *path = kv_xstrdup(e.path);
