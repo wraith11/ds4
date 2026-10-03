@@ -1008,6 +1008,21 @@ bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
     } else {
         text = ds4_kvstore_render_tokens_text(engine, &store_tokens, &text_len);
     }
+    /* Embed image fingerprints into the key so that a checkpoint carrying
+     * image-conditioned KV rows is only reused for the exact same images. */
+    char *fp_tag = ds4_kvstore_vision_fingerprint_tag(vision_fingerprints,
+                                                      vision_count);
+    if (fp_tag) {
+        size_t new_len = text_len + strlen(fp_tag);
+        char *tagged = kv_xmalloc(new_len + 1);
+        memcpy(tagged, text, text_len);
+        memcpy(tagged + text_len, fp_tag, strlen(fp_tag));
+        tagged[new_len] = '\0';
+        free(text);
+        text = tagged;
+        text_len = new_len;
+        free(fp_tag);
+    }
     if (text_len > UINT32_MAX) {
         kv_logf(kc, DS4_KVSTORE_LOG_KVCACHE,
                 "%s: kv cache skipped tokens=%d because rendered text is too large",
