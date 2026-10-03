@@ -10020,6 +10020,11 @@ struct server_slot {
     server *srv;
     int id;
     ds4_session *session;
+    /* Vision image fingerprints of the last request that materialized this
+     * slot, used to tag the disk KV cache key so a checkpoint carrying
+     * image-conditioned rows is only reused for the exact same images. */
+    uint8_t vision_fingerprints[16][32];
+    size_t vision_count;
     live_tool_state responses_live;
     live_tool_state anthropic_live;
     visible_live_state thinking_live;
