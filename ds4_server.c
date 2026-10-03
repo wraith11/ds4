@@ -11280,15 +11280,9 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
     char err[160] = {0};
     ds4_kvstore_trailer_hooks hooks = kv_cache_tool_map_hooks(s, NULL);
     pthread_mutex_lock(&s->inference_mu);
-    /* The payload contains image-conditioned KV rows, but the disk key and
-     * trailer do not contain image fingerprints. Never let generic image
-     * placeholder tokens become a cache hit for a different image.
-     * sync_image_count covers progress-callback writes during prefill;
-     * checkpoint_image_count covers completed sessions. */
-    if (ds4_session_has_vision_state(slot->session)) {
-        pthread_mutex_unlock(&s->inference_mu);
-        return false;
-    }
+    /* Image-conditioned KV rows are now safe to persist: the disk key carries
+     * the image fingerprints, so a checkpoint is only reused for the exact
+     * same images. Pass the fingerprints remembered on the slot. */
     pthread_mutex_lock(&s->kv_mu);
     bool ok = ds4_kvstore_store_live_prefix_text(&s->kv, s->engine,
                                                   slot->session,
@@ -11296,6 +11290,9 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
                                                   cache_text_override,
                                                   cache_text_ext,
                                                   cache_text_key,
+                                                  slot->vision_count ?
+                                                      &slot->vision_fingerprints[0][0] : NULL,
+                                                  slot->vision_count,
                                                   &hooks, err, sizeof(err));
     pthread_mutex_unlock(&s->kv_mu);
     pthread_mutex_unlock(&s->inference_mu);
