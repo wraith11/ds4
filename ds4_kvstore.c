@@ -1361,7 +1361,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                  * prompt from that exact history and tokenize only the text
                  * suffix after the byte prefix. */
                 ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
-                    engine, loaded_tokens, prompt_text + text_bytes,
+                    engine, loaded_tokens, lookup_text + text_bytes,
                     effective_prompt);
             }
             if (hooks && hooks->load && (hdr.ext_flags & hooks->ext_flag)) {
