@@ -7203,7 +7203,7 @@ static void openai_stream_start(const request *r, openai_stream *st) {
     memset(st, 0, sizeof(*st));
     st->active = true;
     st->mode = ds4_think_mode_enabled(r->think_mode) ? OPENAI_STREAM_THINKING : OPENAI_STREAM_TEXT;
-    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r);
+    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r, false);
 }
 
 static void openai_tool_stream_free(openai_tool_stream *ts) {
