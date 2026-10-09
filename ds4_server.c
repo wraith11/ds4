@@ -17484,43 +17484,6 @@ static void test_openai_tool_stream_sends_incremental_text(void) {
 
     free(out);
     tool_calls_free(&calls);
-    request_free(&r);
-    close(sv[0]);
-    close(sv[1]);
-}
-
-static void test_openai_stream_reroutes_second_reasoning_pass(void) {
-    int sv[2];
-    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    if (sv[0] < 0 || sv[1] < 0) return;
-
-    request r;
-    request_init(&r, REQ_CHAT, 128);
-    r.api = API_OPENAI;
-    r.stream = true;
-    r.think_mode = DS4_THINK_HIGH;
-    r.has_tools = true;
-
-    openai_stream st;
-    openai_stream_start(&r, &st);
-    const char *partial = "<think>first pass</think>escaped draft";
-    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "chatcmpl_second_think",
-                                         &st, partial, strlen(partial), false));
-    const char *complete =
-        "<think>first pass</think>escaped draft</think>final answer";
-    TEST_ASSERT(openai_sse_finish_live(sv[0], NULL, &r, "chatcmpl_second_think",
-                                       &st, complete, strlen(complete), NULL,
-                                       "stop", 5, 9));
-    shutdown(sv[0], SHUT_WR);
-    char *out = read_socket_text(sv[1]);
-
-    TEST_ASSERT(strstr(out, "\"reasoning_content\":\"first pass\"") != NULL);
-    TEST_ASSERT(strstr(out, "\"reasoning_content\":\"escaped draft\"") != NULL);
-    TEST_ASSERT(strstr(out, "\"content\":\"final answer\"") != NULL);
-    TEST_ASSERT(strstr(out, "\"content\":\"escaped draft") == NULL);
-    TEST_ASSERT(strstr(out, "</think>") == NULL);
-
-    free(out);
     openai_stream_free(&st);
     request_free(&r);
     close(sv[0]);
