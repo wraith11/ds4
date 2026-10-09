@@ -13606,11 +13606,32 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                    j->req.image_count, cached, prompt_for_sync->len);
     }
     if (cached == 0) slot->continued_last_store_tokens = 0;
+    /* Responses fork heal: a token-mismatch miss with a nonempty shared
+     * prefix means the client's canonical re-render forked from the live
+     * checkpoint mid-history (a compaction, abort, or history edit rewrote
+     * the transcript). The forked live checkpoint, and any disk payload
+     * keyed to it, diverge from what the client will resend. Persisting or
+     * loading them re-seeds the fork on every turn: the next compare misses
+     * at the same frozen point and the fallback re-runs. On that shape,
+     * skip the evict-store below, reject a forked disk payload, and heal by
+     * full-syncing the client's canonical prompt so the checkpoint becomes
+     * the client's re-render and the next turn continues in lockstep. */
+    const bool responses_fork_heal =
+        responses_protocol && !multimodal && old_pos > 0 &&
+        common > 0 && common < old_pos && common < j->req.prompt.len;
+    if (cached == 0 && responses_fork_heal) {
+        server_log(DS4_LOG_KVCACHE,
+                   "ds4-server: responses live checkpoint forks from client re-render RESPPROTO live=%d prompt=%d common=%d; healing from canonical prompt (skip forked evict-store, reject forked disk load)",
+                   old_pos, j->req.prompt.len, common);
+    }
     if (!multimodal && s->kv.enabled && cached == 0 &&
-        old_pos >= s->kv.opt.min_tokens) {
+        old_pos >= s->kv.opt.min_tokens && !responses_fork_heal) {
         /* Loading a disk snapshot replaces the live Metal session.  Persist the
          * current checkpoint first, otherwise a cache hit for an older prefix
-         * would silently discard the newer conversation state. */
+         * would silently discard the newer conversation state.  Skipped on a
+         * Responses fork heal: the checkpoint about to be persisted forks from
+         * the client's re-render and would be re-loaded (and re-forked) on
+         * every subsequent turn. */
         kv_cache_store_current(s, slot, "evict");
     }
     if (!multimodal && cached == 0) {
