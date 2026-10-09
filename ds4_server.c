@@ -9211,7 +9211,7 @@ static bool anthropic_sse_start_live(int fd, const request *r, const char *id,
     memset(st, 0, sizeof(*st));
     st->active = ok;
     st->mode = ds4_think_mode_enabled(r->think_mode) ? ANTH_STREAM_THINKING : ANTH_STREAM_TEXT;
-    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r);
+    st->guard_second_reasoning = stream_needs_second_reasoning_guard(r, true);
     return ok;
 }
 
