@@ -17484,6 +17484,11 @@ static void test_openai_tool_stream_sends_incremental_text(void) {
 
     free(out);
     tool_calls_free(&calls);
+    request_free(&r);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_openai_stream_emits_content_incrementally(void) {
     int sv[2];
     TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
