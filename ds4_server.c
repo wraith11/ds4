@@ -7189,9 +7189,14 @@ typedef struct {
     openai_tool_stream tool;
 } openai_stream;
 
-static bool stream_needs_second_reasoning_guard(const request *r) {
-    return ds4_think_mode_enabled(r->think_mode) && r->has_tools &&
-           r->model_syntax != SERVER_MODEL_SYNTAX_QWEN;
+static bool stream_needs_second_reasoning_guard(const request *r, bool anthropic) {
+    /* The second-reasoning guard was introduced for the escaped second
+     * reasoning pass reported in #678, which was observed on Anthropic
+     * streaming with legacy DeepSeek formatting. Limiting it to that
+     * combination lets OpenAI-compatible streams emit answer text
+     * immediately instead of buffering until generation ends (issue #1076). */
+    return anthropic && ds4_think_mode_enabled(r->think_mode) && r->has_tools &&
+           r->model_syntax == SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
 static void openai_stream_start(const request *r, openai_stream *st) {
