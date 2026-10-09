@@ -17484,6 +17484,35 @@ static void test_openai_tool_stream_sends_incremental_text(void) {
 
     free(out);
     tool_calls_free(&calls);
+static void test_openai_stream_emits_content_incrementally(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+    r.think_mode = DS4_THINK_HIGH;
+    r.has_tools = true;
+
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    const char *partial = "first pass</think>first answer chunk";
+    TEST_ASSERT(openai_sse_stream_update(sv[0], NULL, &r, "chatcmpl_content_stream",
+                                         &st, partial, strlen(partial), false));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"reasoning_content\":\"first pass\"") != NULL);
+    TEST_ASSERT(strstr(out, "\"content\":\"first answer chunk\"") != NULL);
+
+    free(out);
+    openai_stream_free(&st);
+    request_free(&r);
+    close(sv[0]);
+    close(sv[1]);
+}
     openai_stream_free(&st);
     request_free(&r);
     close(sv[0]);
