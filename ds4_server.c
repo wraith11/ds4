@@ -17519,11 +17519,6 @@ static void test_openai_stream_emits_content_incrementally(void) {
     close(sv[1]);
 }
     openai_stream_free(&st);
-    request_free(&r);
-    close(sv[0]);
-    close(sv[1]);
-}
-
 static void test_openai_qwen_tool_stream_sends_answer_before_finish(void) {
     int sv[2];
     TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
