@@ -22993,7 +22993,7 @@ static void ds4_server_unit_tests_run(void) {
     test_anthropic_usage_reports_cache_details();
     test_anthropic_tool_stream_sends_live_tool_use();
     test_openai_tool_stream_sends_incremental_text();
-    test_openai_stream_reroutes_second_reasoning_pass();
+    test_openai_stream_emits_content_incrementally();
     test_openai_qwen_tool_stream_sends_answer_before_finish();
     test_qwen_stream_split_reasoning_close();
     test_openai_stream_usage_reports_cache_details();
