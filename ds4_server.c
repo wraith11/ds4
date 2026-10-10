@@ -7189,9 +7189,19 @@ typedef struct {
     openai_tool_stream tool;
 } openai_stream;
 
+/* The second-reasoning guard was introduced for the escaped second reasoning
+ * pass reported in issue #678, which was measured on Anthropic streaming with
+ * legacy DeepSeek formatting. On OpenAI-compatible streams it cannot
+ * distinguish a real answer from an unmarked second reasoning pass, so it
+ * holds all answer text until a close marker, tool marker, or the final update
+ * -- turning a live stream into one final chunk (issue #1076). Restrict the
+ * guard to the combination it protects: Anthropic API with legacy DeepSeek
+ * syntax. OpenAI-compatible streams emit answer text immediately; modern
+ * DeepSeek 4.1, GLM, and Qwen stream normally on Anthropic too. */
 static bool stream_needs_second_reasoning_guard(const request *r) {
     return ds4_think_mode_enabled(r->think_mode) && r->has_tools &&
-           r->model_syntax != SERVER_MODEL_SYNTAX_QWEN;
+           r->api == API_ANTHROPIC &&
+           r->model_syntax == SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
 static void openai_stream_start(const request *r, openai_stream *st) {
@@ -10010,6 +10020,11 @@ struct server_slot {
     server *srv;
     int id;
     ds4_session *session;
+    /* Vision image fingerprints of the last request that materialized this
+     * slot, used to tag the disk KV cache key so a checkpoint carrying
+     * image-conditioned rows is only reused for the exact same images. */
+    uint8_t vision_fingerprints[16][32];
+    size_t vision_count;
     live_tool_state responses_live;
     live_tool_state anthropic_live;
     visible_live_state thinking_live;
@@ -11265,15 +11280,9 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
     char err[160] = {0};
     ds4_kvstore_trailer_hooks hooks = kv_cache_tool_map_hooks(s, NULL);
     pthread_mutex_lock(&s->inference_mu);
-    /* The payload contains image-conditioned KV rows, but the disk key and
-     * trailer do not contain image fingerprints. Never let generic image
-     * placeholder tokens become a cache hit for a different image.
-     * sync_image_count covers progress-callback writes during prefill;
-     * checkpoint_image_count covers completed sessions. */
-    if (ds4_session_has_vision_state(slot->session)) {
-        pthread_mutex_unlock(&s->inference_mu);
-        return false;
-    }
+    /* Image-conditioned KV rows are now safe to persist: the disk key carries
+     * the image fingerprints, so a checkpoint is only reused for the exact
+     * same images. Pass the fingerprints remembered on the slot. */
     pthread_mutex_lock(&s->kv_mu);
     bool ok = ds4_kvstore_store_live_prefix_text(&s->kv, s->engine,
                                                   slot->session,
@@ -11281,6 +11290,9 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
                                                   cache_text_override,
                                                   cache_text_ext,
                                                   cache_text_key,
+                                                  slot->vision_count ?
+                                                      &slot->vision_fingerprints[0][0] : NULL,
+                                                  slot->vision_count,
                                                   &hooks, err, sizeof(err));
     pthread_mutex_unlock(&s->kv_mu);
     pthread_mutex_unlock(&s->inference_mu);
@@ -11291,7 +11303,10 @@ static bool kv_cache_store_live_prefix(server *s, server_slot *slot,
                                        const ds4_tokens *tokens,
                                        int store_len, const char *reason) {
     return kv_cache_store_live_prefix_text(s, slot, tokens, store_len, reason,
-                                           NULL, 0, NULL);
+                                           NULL, 0, NULL,
+                                           slot->vision_count ?
+                                               &slot->vision_fingerprints[0][0] : NULL,
+                                           slot->vision_count);
 }
 
 static void kv_cache_store_current(server *s, server_slot *slot,
@@ -11433,15 +11448,18 @@ static int kv_cache_try_load_text(server *s, server_slot *slot,
     ds4_kvstore_load_result lr = {0};
     ds4_kvstore_trailer_hooks hooks = kv_cache_tool_map_hooks(s, NULL);
     pthread_mutex_lock(&s->inference_mu);
-    /* Disk payloads intentionally carry no image identity. If this slot held
-     * vision state, discard it before restoring a text-only checkpoint so the
-     * next sync does not reject the fresh payload as a stale image match. */
-    if (ds4_session_has_vision_state(slot->session)) {
-        ds4_session_invalidate(slot->session);
-    }
+    /* The disk key is tagged with image fingerprints, so restoring a vision
+     * checkpoint is only valid for the exact same images. The session is
+     * invalidated below only when a text-only checkpoint is restored onto a
+     * slot that held vision state; otherwise the fingerprint-tagged key keeps
+     * the match image-specific. */
     pthread_mutex_lock(&s->kv_mu);
     int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, slot->session,
-                                           prompt_text, effective_prompt, &lr,
+                                           prompt_text,
+                                           slot->vision_count ?
+                                               &slot->vision_fingerprints[0][0] : NULL,
+                                           slot->vision_count,
+                                           effective_prompt, &lr,
                                            &hooks, responses_protocol);
     pthread_mutex_unlock(&s->kv_mu);
     pthread_mutex_unlock(&s->inference_mu);
@@ -11457,7 +11475,16 @@ static int kv_cache_try_load(server *s, server_slot *slot, const request *req,
                              ds4_tokens *effective_prompt,
                              char **loaded_path_out,
                              uint8_t *loaded_ext_flags_out) {
+    /* Tag the disk cache key with the request's image fingerprints so a
+     * vision checkpoint is only loaded for the exact same images. */
+    const uint8_t *fp = NULL;
+    size_t fcount = 0;
+    if (req && req->image_count > 0 && req->images) {
+        fp = &req->images[0].embedding.fingerprint[0];
+        fcount = req->image_count;
+    }
     return kv_cache_try_load_text(s, slot, req ? req->prompt_text : NULL,
+                                  fp, fcount,
                                   effective_prompt,
                                   loaded_path_out,
                                   loaded_ext_flags_out,
@@ -12432,6 +12459,9 @@ static int server_session_sync(server *s, server_slot *slot,
                                const ds4_tokens *prompt,
                                char *err, size_t errlen) {
     if (!s || !slot || !prompt) return 1;
+    /* A text-only request clears any remembered image fingerprints so a
+     * text checkpoint is not tagged with stale vision identity. */
+    slot->vision_count = 0;
     if (!s->batched_mode) {
         if (!server_prefill_enter(s, slot)) return DS4_SESSION_SYNC_INTERRUPTED;
         int rc = ds4_session_sync(slot->session, prompt, err, errlen);
@@ -12498,6 +12528,12 @@ static int server_session_sync_multimodal(server *s, server_slot *slot,
     if (!image_count)
         return server_session_sync(s, slot, prompt, err, errlen);
     if (!s || !slot || !prompt || !images) return 1;
+    /* Remember the image fingerprints so the disk KV cache key can be tagged
+     * with the image identity when this slot's checkpoint is persisted. */
+    slot->vision_count = image_count > 16 ? 16 : image_count;
+    for (size_t i = 0; i < slot->vision_count; i++) {
+        memcpy(slot->vision_fingerprints[i], images[i].embedding.fingerprint, 32);
+    }
     if (!s->batched_mode) {
         if (!server_prefill_enter(s, slot)) return DS4_SESSION_SYNC_INTERRUPTED;
         int rc = ds4_session_sync_multimodal(slot->session, prompt,
@@ -13048,6 +13084,7 @@ static void canonicalize_tool_checkpoint(server *s, server_slot *slot,
         ds4_tokens effective = {0};
         int loaded = kv_cache_try_load_text(s, slot,
                                             rendered.ptr ? rendered.ptr : "",
+                                            NULL, 0,
                                             &effective, &path, NULL, false);
         if (loaded == 0) {
             pthread_mutex_lock(&s->inference_mu);
@@ -13601,14 +13638,14 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                    j->req.image_count, cached, prompt_for_sync->len);
     }
     if (cached == 0) slot->continued_last_store_tokens = 0;
-    if (!multimodal && s->kv.enabled && cached == 0 &&
+    if (s->kv.enabled && cached == 0 &&
         old_pos >= s->kv.opt.min_tokens) {
         /* Loading a disk snapshot replaces the live Metal session.  Persist the
          * current checkpoint first, otherwise a cache hit for an older prefix
          * would silently discard the newer conversation state. */
         kv_cache_store_current(s, slot, "evict");
     }
-    if (!multimodal && cached == 0) {
+    if (cached == 0) {
         disk_cached = kv_cache_try_load(s, slot, &j->req, &effective_prompt,
                                         &disk_cache_path,
                                         &disk_cache_ext_flags);
@@ -13704,7 +13741,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     ds4_session_set_display_progress(slot->session, server_progress_cb, &progress);
 
     int cold_store_len = 0;
-    if (!multimodal && cached == 0 &&
+    if (cached == 0 &&
         s->kv.enabled &&
         prompt_for_sync->len >= s->kv.opt.min_tokens &&
         s->kv.opt.cold_max_tokens > 0 &&
@@ -13811,7 +13848,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                req_flags,
                now_sec() - t0);
     if (cold_store_len == prompt_for_sync->len) {
-        if (!multimodal && kv_cache_store_live_prefix(s, slot, prompt_for_sync,
+        if (kv_cache_store_live_prefix(s, slot, prompt_for_sync,
                                        cold_store_len, "cold")) {
             kv_cache_slot_note_store(slot, cold_store_len);
             suppressed_continued_last = -1;

@@ -926,6 +926,35 @@ static void kv_cache_rewrite_trailer(ds4_kvstore *kc, const char *path,
     (void)ok;
 }
 
+/* Build a deterministic fingerprint tag from the vision image fingerprints.
+ * The disk KV cache key is derived from the rendered text, which carries no
+ * image identity. Two requests with different images but the same text would
+ * otherwise share a cache entry and produce a wrong cache hit. Embedding the
+ * image fingerprints into the key makes the checkpoint image-specific: the
+ * same text plus the same image yields the same key, while a different image
+ * yields a different key. Returns a heap string (caller frees) or NULL when
+ * there are no images to tag. */
+static char *ds4_kvstore_vision_fingerprint_tag(const uint8_t *fingerprints,
+                                                size_t vision_count) {
+    if (!fingerprints || vision_count == 0) return NULL;
+    /* 32 hex chars per fingerprint plus a separator per entry. */
+    size_t cap = 1 + vision_count * (32 + 1);
+    char *tag = kv_xmalloc(cap);
+    size_t pos = 0;
+    tag[pos++] = '|';
+    for (size_t i = 0; i < vision_count; i++) {
+        if (i > 0) tag[pos++] = ',';
+        static const char hex[] = "0123456789abcdef";
+        for (size_t j = 0; j < 32; j++) {
+            uint8_t b = fingerprints[i * 32 + j];
+            tag[pos++] = hex[b >> 4];
+            tag[pos++] = hex[b & 0x0f];
+        }
+    }
+    tag[pos] = '\0';
+    return tag;
+}
+
 bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
                                         ds4_engine *engine,
                                         ds4_session *session,
@@ -935,6 +964,8 @@ bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
                                         const char *cache_text_override,
                                         uint8_t cache_text_ext,
                                         const char *cache_text_key,
+                                        const uint8_t *vision_fingerprints,
+                                        size_t vision_count,
                                         const ds4_kvstore_trailer_hooks *hooks,
                                         char *err,
                                         size_t err_len) {
@@ -976,6 +1007,21 @@ bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
         text_len = strlen(text);
     } else {
         text = ds4_kvstore_render_tokens_text(engine, &store_tokens, &text_len);
+    }
+    /* Embed image fingerprints into the key so that a checkpoint carrying
+     * image-conditioned KV rows is only reused for the exact same images. */
+    char *fp_tag = ds4_kvstore_vision_fingerprint_tag(vision_fingerprints,
+                                                      vision_count);
+    if (fp_tag) {
+        size_t new_len = text_len + strlen(fp_tag);
+        char *tagged = kv_xmalloc(new_len + 1);
+        memcpy(tagged, text, text_len);
+        memcpy(tagged + text_len, fp_tag, strlen(fp_tag));
+        tagged[new_len] = '\0';
+        free(text);
+        text = tagged;
+        text_len = new_len;
+        free(fp_tag);
     }
     if (text_len > UINT32_MAX) {
         kv_logf(kc, DS4_KVSTORE_LOG_KVCACHE,
@@ -1171,7 +1217,7 @@ bool ds4_kvstore_store_live_prefix(ds4_kvstore *kc,
                                    size_t err_len) {
     return ds4_kvstore_store_live_prefix_text(kc, engine, session, tokens,
                                               store_len, reason, NULL, 0, NULL,
-                                              hooks, err, err_len);
+                                              NULL, 0, hooks, err, err_len);
 }
 
 bool ds4_kvstore_maybe_store_continued(ds4_kvstore *kc,
@@ -1222,6 +1268,8 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                               ds4_engine *engine,
                               ds4_session *session,
                               const char *prompt_text,
+                              const uint8_t *vision_fingerprints,
+                              size_t vision_count,
                               ds4_tokens *effective_prompt,
                               ds4_kvstore_load_result *result,
                               const ds4_kvstore_trailer_hooks *hooks,
@@ -1229,13 +1277,35 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
     if (result) memset(result, 0, sizeof(*result));
     if (effective_prompt) effective_prompt->len = 0;
     if (!kc->enabled || !prompt_text) return 0;
+    /* Append the same image fingerprint tag used at store time so the lookup
+     * only matches a checkpoint written for the exact same images. */
+    char *fp_tag = ds4_kvstore_vision_fingerprint_tag(vision_fingerprints,
+                                                      vision_count);
+    char *tagged_prompt = NULL;
+    const char *lookup_text = prompt_text;
+    size_t lookup_len = strlen(prompt_text);
+    if (fp_tag) {
+        tagged_prompt = kv_xmalloc(lookup_len + strlen(fp_tag) + 1);
+        memcpy(tagged_prompt, prompt_text, lookup_len);
+        memcpy(tagged_prompt + lookup_len, fp_tag, strlen(fp_tag));
+        tagged_prompt[lookup_len + strlen(fp_tag)] = '\0';
+        lookup_text = tagged_prompt;
+        lookup_len += strlen(fp_tag);
+        free(fp_tag);
+    }
     const int quant_bits = ds4_engine_routed_quant_bits(engine);
-    if (!ds4_kvstore_quant_bits_supported(quant_bits)) return 0;
+    if (!ds4_kvstore_quant_bits_supported(quant_bits)) {
+        free(tagged_prompt);
+        return 0;
+    }
     const int model_id = ds4_engine_model_id(engine);
-    const size_t prompt_bytes = strlen(prompt_text);
-    int idx = ds4_kvstore_find_text_prefix(kc, prompt_text, model_id, quant_bits,
+    const size_t prompt_bytes = lookup_len;
+    int idx = ds4_kvstore_find_text_prefix(kc, lookup_text, model_id, quant_bits,
                                            ds4_session_ctx(session));
-    if (idx < 0) return 0;
+    if (idx < 0) {
+        free(tagged_prompt);
+        return 0;
+    }
 
     ds4_kvstore_entry e = kc->entry[idx];
     char *path = kv_xstrdup(e.path);
@@ -1269,7 +1339,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                 if (strcmp(text_sha, e.sha)) {
                     header_ok = false;
                     fail_reason = "cached text hash mismatch";
-                } else if (!ds4_kvstore_byte_prefix_match(prompt_text, prompt_bytes,
+                } else if (!ds4_kvstore_byte_prefix_match(lookup_text, prompt_bytes,
                                                           cached_text, text_bytes)) {
                     header_ok = false;
                     fail_reason = "cached text prefix mismatch";
@@ -1291,7 +1361,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
                  * prompt from that exact history and tokenize only the text
                  * suffix after the byte prefix. */
                 ds4_kvstore_build_prompt_from_exact_prefix_and_text_suffix(
-                    engine, loaded_tokens, prompt_text + text_bytes,
+                    engine, loaded_tokens, lookup_text + text_bytes,
                     effective_prompt);
             }
             if (hooks && hooks->load && (hdr.ext_flags & hooks->ext_flag)) {
@@ -1342,6 +1412,7 @@ int ds4_kvstore_try_load_text(ds4_kvstore *kc,
     }
     free(cached_text);
     free(path);
+    free(tagged_prompt);
     return loaded;
 }
 
