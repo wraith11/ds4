@@ -11146,10 +11146,10 @@ static double kv_entry_eviction_score(const kv_entry *e, const ds4_tokens *live,
 #endif
 
 #ifdef DS4_SERVER_TEST
-static void kv_cache_evict(kv_disk_cache *kc, const ds4_tokens *live,
+static bool kv_cache_evict(kv_disk_cache *kc, const ds4_tokens *live,
                            uint64_t extra_bytes,
                            const ds4_kvstore_eviction_context *incoming) {
-    ds4_kvstore_evict(kc, live, extra_bytes, incoming);
+    return ds4_kvstore_evict(kc, live, extra_bytes, incoming);
 }
 #endif
 
