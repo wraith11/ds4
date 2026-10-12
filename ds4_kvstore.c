@@ -1095,8 +1095,18 @@ bool ds4_kvstore_store_live_prefix_text(ds4_kvstore *kc,
         .quant_bits = (uint8_t)quant_bits,
         .ctx_size = (uint32_t)ds4_session_ctx(session),
         .reject_different_quant = kc->reject_different_quant,
+        .protect_text = protect_text,
     };
-    ds4_kvstore_evict(kc, live_tokens, est_file_bytes, &incoming);
+    if (!ds4_kvstore_evict(kc, live_tokens, est_file_bytes, &incoming)) {
+        kv_logf(kc, DS4_KVSTORE_LOG_KVCACHE,
+                "%s: kv cache skipped tokens=%d reason=%s because making room would evict the checkpoint the next request loads",
+                kv_log_name(kc), store_tokens.len, reason);
+        ds4_session_payload_file_free(&staged);
+        free(text);
+        free(path);
+        ds4_tokens_free(&store_tokens);
+        return false;
+    }
 
     kv_buf tmpb = {0};
     kv_buf_printf(&tmpb, "%s.tmp.%ld", path, (long)getpid());
