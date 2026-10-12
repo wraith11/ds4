@@ -1247,26 +1247,9 @@ bool ds4_kvstore_maybe_store_continued(ds4_kvstore *kc,
 int ds4_kvstore_find_text_prefix(ds4_kvstore *kc, const char *prompt_text,
                                  int model_id, int quant_bits, int ctx_size) {
     if (!prompt_text) return -1;
-    const size_t prompt_bytes = strlen(prompt_text);
     kv_cache_refresh(kc);
-    int best = -1;
-    for (int i = 0; i < kc->len; i++) {
-        ds4_kvstore_entry *e = &kc->entry[i];
-        if (e->text_bytes > prompt_bytes || e->text_bytes > SIZE_MAX) continue;
-        if ((int)e->tokens < kc->opt.min_tokens) continue;
-        if (e->model_id != (uint8_t)model_id) continue;
-        if ((uint32_t)ctx_size < e->ctx_size) continue;
-        if (kc->reject_different_quant && e->quant_bits != (uint8_t)quant_bits) continue;
-        if (best >= 0) {
-            ds4_kvstore_entry *b = &kc->entry[best];
-            if (e->text_bytes < b->text_bytes) continue;
-            if (e->text_bytes == b->text_bytes && e->tokens <= b->tokens) continue;
-        }
-        char sha[41];
-        ds4_kvstore_sha1_bytes_hex(prompt_text, (size_t)e->text_bytes, sha);
-        if (!strcmp(sha, e->sha)) best = i;
-    }
-    return best;
+    return kv_cache_best_text_prefix(kc, prompt_text, model_id, quant_bits,
+                                     ctx_size);
 }
 
 int ds4_kvstore_try_load_text(ds4_kvstore *kc,
