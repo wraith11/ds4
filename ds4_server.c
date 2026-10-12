@@ -13639,7 +13639,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
          * Responses fork heal: the checkpoint about to be persisted forks from
          * the client's re-render and would be re-loaded (and re-forked) on
          * every subsequent turn. */
-        kv_cache_store_current(s, slot, "evict");
+        kv_cache_store_current(s, slot, "evict", j->req.prompt_text);
     }
     if (!multimodal && cached == 0) {
         disk_cached = kv_cache_try_load(s, slot, &j->req, &effective_prompt,
