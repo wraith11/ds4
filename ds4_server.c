@@ -16193,7 +16193,7 @@ int main(int argc, char **argv) {
         server_log(DS4_LOG_KVCACHE,
                    "ds4-server: persisting resident KV cache before shutdown slot=%d tokens=%d",
                    i, tokens->len);
-        kv_cache_store_current(&s, slot, "shutdown");
+        kv_cache_store_current(&s, slot, "shutdown", NULL);
     }
     server_close_resources(&s);
     return 0;
