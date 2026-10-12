@@ -529,6 +529,33 @@ static bool kv_cache_incoming_supersedes_continued(
     return !strcmp(prefix_sha, e->sha);
 }
 
+/* Index of the checkpoint a load of prompt_text would pick, or -1.  Uses the
+ * entries already in kc; callers refresh first. */
+static int kv_cache_best_text_prefix(const ds4_kvstore *kc,
+                                     const char *prompt_text,
+                                     int model_id, int quant_bits,
+                                     int ctx_size) {
+    const size_t prompt_bytes = strlen(prompt_text);
+    int best = -1;
+    for (int i = 0; i < kc->len; i++) {
+        ds4_kvstore_entry *e = &kc->entry[i];
+        if (e->text_bytes > prompt_bytes || e->text_bytes > SIZE_MAX) continue;
+        if ((int)e->tokens < kc->opt.min_tokens) continue;
+        if (e->model_id != (uint8_t)model_id) continue;
+        if ((uint32_t)ctx_size < e->ctx_size) continue;
+        if (kc->reject_different_quant && e->quant_bits != (uint8_t)quant_bits) continue;
+        if (best >= 0) {
+            ds4_kvstore_entry *b = &kc->entry[best];
+            if (e->text_bytes < b->text_bytes) continue;
+            if (e->text_bytes == b->text_bytes && e->tokens <= b->tokens) continue;
+        }
+        char sha[41];
+        ds4_kvstore_sha1_bytes_hex(prompt_text, (size_t)e->text_bytes, sha);
+        if (!strcmp(sha, e->sha)) best = i;
+    }
+    return best;
+}
+
 static bool kv_cache_reason_is_anchor(uint8_t reason) {
     return reason == DS4_KVSTORE_REASON_COLD ||
            reason == DS4_KVSTORE_REASON_EVICT ||
