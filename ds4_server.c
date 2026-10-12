@@ -23362,6 +23362,9 @@ static void ds4_server_unit_tests_run(void) {
     test_kv_cache_eviction_score_decays_stale_hits();
     test_kv_cache_eviction_decayed_hits_tie_break_by_age();
     test_kv_cache_eviction_keeps_aligned_continued_frontiers();
+    test_kv_cache_eviction_protects_checkpoint_about_to_load();
+    test_kv_cache_eviction_protects_after_earlier_victims();
+    test_kv_cache_eviction_keeps_protected_checkpoint_when_full();
 }
 
 #ifndef DS4_SERVER_TEST_NO_MAIN
