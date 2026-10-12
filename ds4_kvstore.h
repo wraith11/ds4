@@ -156,7 +156,7 @@ double ds4_kvstore_entry_eviction_score(const ds4_kvstore_entry *e,
                                         const ds4_tokens *live,
                                         uint64_t now,
                                         const ds4_kvstore_eviction_context *incoming);
-void ds4_kvstore_evict(ds4_kvstore *kc, const ds4_tokens *live,
+bool ds4_kvstore_evict(ds4_kvstore *kc, const ds4_tokens *live,
                        uint64_t extra_bytes,
                        const ds4_kvstore_eviction_context *incoming);
 int ds4_kvstore_find_text_prefix(ds4_kvstore *kc, const char *prompt_text,
