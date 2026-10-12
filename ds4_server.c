@@ -22296,6 +22296,207 @@ static void test_kv_cache_eviction_decayed_hits_tie_break_by_age(void) {
     rmdir(dir);
 }
 
+static char *test_kv_text_path(const char *dir, const char *text) {
+    char sha[41], name[44];
+    sha1_bytes_hex(text, strlen(text), sha);
+    snprintf(name, sizeof(name), "%.40s.kv", sha);
+    return path_join(dir, name);
+}
+
+/* Sum of the sizes of the .kv files left in dir, measured with stat so it does
+ * not depend on the cache's own bookkeeping. */
+static uint64_t test_kv_dir_bytes(const char *dir) {
+    uint64_t total = 0;
+    DIR *d = opendir(dir);
+    TEST_ASSERT(d != NULL);
+    if (!d) return 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        size_t n = strlen(de->d_name);
+        if (n < 3 || strcmp(de->d_name + n - 3, ".kv") != 0) continue;
+        char *path = path_join(dir, de->d_name);
+        struct stat st;
+        TEST_ASSERT(stat(path, &st) == 0);
+        if (stat(path, &st) == 0) total += (uint64_t)st.st_size;
+        free(path);
+    }
+    closedir(d);
+    return total;
+}
+
+/* Session switch: the main agent's evict snapshot is fresh with no hits, an
+ * older session has decayed hits that score higher, and the subagent's
+ * outgoing snapshot needs room for one eviction.  The main agent is the
+ * request about to load. */
+static void test_kv_cache_eviction_protects_checkpoint_about_to_load(void) {
+    const char *old_text = "old session transcript";
+    const char *main_text = "main agent transcript";
+    const char *sub_text = "subagent transcript";
+    const char *next_prompt = "main agent transcript\nuser: subagent result";
+    const uint64_t now = (uint64_t)time(NULL);
+    const uint64_t hour_ago = now - 3600u;
+
+    for (int protect = 1; protect >= 0; protect--) {
+        char tmpl[] = "/tmp/ds4-kv-protect-load-test.XXXXXX";
+        char *dir = mkdtemp(tmpl);
+        TEST_ASSERT(dir != NULL);
+        if (!dir) return;
+
+        test_kv_text_stub_file_used(dir, old_text, 0, KV_REASON_COLD,
+                                    2048, 3, hour_ago, hour_ago, 2048);
+        test_kv_text_stub_file_used(dir, main_text, 0, KV_REASON_EVICT,
+                                    2048, 0, now, now, 2048);
+        char *old_path = test_kv_text_path(dir, old_text);
+        char *main_path = test_kv_text_path(dir, main_text);
+
+        kv_disk_cache kc = {0};
+        kc.enabled = true;
+        kc.dir = xstrdup(dir);
+        kc.opt = kv_cache_default_options();
+        uint64_t incoming_bytes =
+            KV_CACHE_FIXED_HEADER + 4u + strlen(sub_text) + 2048u;
+        kc.budget_bytes =
+            incoming_bytes + KV_CACHE_FIXED_HEADER + 4u + strlen(old_text) + 2048u;
+        ds4_kvstore_eviction_context incoming = {
+            .text = sub_text,
+            .text_len = strlen(sub_text),
+            .model_id = 0,
+            .quant_bits = 2,
+            .ctx_size = 32768,
+            .reject_different_quant = false,
+            .protect_text = protect ? next_prompt : NULL,
+        };
+        TEST_ASSERT(kv_cache_evict(&kc, NULL, incoming_bytes, &incoming));
+        TEST_ASSERT(test_kv_dir_bytes(dir) + incoming_bytes <= kc.budget_bytes);
+
+        if (protect) {
+            TEST_ASSERT(access(main_path, F_OK) == 0);
+            TEST_ASSERT(access(old_path, F_OK) != 0);
+        } else {
+            /* Without protection the older session's hits score higher, so
+             * the main agent's snapshot is evicted: the failure this test
+             * guards against. */
+            TEST_ASSERT(access(main_path, F_OK) != 0);
+            TEST_ASSERT(access(old_path, F_OK) == 0);
+        }
+
+        kv_cache_close(&kc);
+        unlink(old_path);
+        unlink(main_path);
+        free(old_path);
+        free(main_path);
+        rmdir(dir);
+    }
+}
+
+static void test_kv_cache_eviction_protects_after_earlier_victims(void) {
+    char tmpl[] = "/tmp/ds4-kv-protect-shift-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    /* Equal-length texts give equal file sizes.  readdir order is arbitrary,
+     * so first observe it, then make the last entry the protected one.  Both
+     * victims sit before it and are deleted first, which shifts its index. */
+    const char *texts[3] = {"transcript a", "transcript b", "transcript c"};
+    for (int i = 0; i < 3; i++)
+        test_kv_text_stub_file_used(dir, texts[i], 0, KV_REASON_COLD,
+                                    2048, 0, 100, 100, 2048);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+    int last = -1;
+    for (int i = 0; i < 3; i++)
+        if (kv_cache_find_text_prefix(&kc, texts[i], 2, 32768) == 2) last = i;
+    TEST_ASSERT(last >= 0);
+    if (last < 0) last = 0;
+
+    /* The protected entry is the cheapest victim: a stale, never-hit
+     * continued checkpoint.  Rewriting in place keeps the directory order. */
+    test_kv_text_stub_file_used(dir, texts[last], 0, KV_REASON_CONTINUED,
+                                2048, 0, 100, 100, 2048);
+    char protect_text[64];
+    snprintf(protect_text, sizeof(protect_text), "%s\nuser: next", texts[last]);
+
+    const char *sub_text = "subagent transcript";
+    uint64_t incoming_bytes =
+        KV_CACHE_FIXED_HEADER + 4u + strlen(sub_text) + 2048u;
+    kc.budget_bytes =
+        incoming_bytes + KV_CACHE_FIXED_HEADER + 4u + strlen(texts[last]) + 2048u;
+    ds4_kvstore_eviction_context incoming = {
+        .text = sub_text,
+        .text_len = strlen(sub_text),
+        .model_id = 0,
+        .quant_bits = 2,
+        .ctx_size = 32768,
+        .reject_different_quant = false,
+        .protect_text = protect_text,
+    };
+    TEST_ASSERT(kv_cache_evict(&kc, NULL, incoming_bytes, &incoming));
+    TEST_ASSERT(test_kv_dir_bytes(dir) + incoming_bytes <= kc.budget_bytes);
+
+    for (int i = 0; i < 3; i++) {
+        char *path = test_kv_text_path(dir, texts[i]);
+        TEST_ASSERT((access(path, F_OK) == 0) == (i == last));
+        unlink(path);
+        free(path);
+    }
+    kv_cache_close(&kc);
+    rmdir(dir);
+}
+
+static void test_kv_cache_eviction_keeps_protected_checkpoint_when_full(void) {
+    char tmpl[] = "/tmp/ds4-kv-protect-full-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *small_text = "small unrelated transcript";
+    const char *main_text = "main agent transcript";
+    const char *sub_text = "subagent transcript";
+    const uint64_t now = (uint64_t)time(NULL);
+    test_kv_text_stub_file_used(dir, small_text, 0, KV_REASON_COLD,
+                                1024, 0, 100, 100, 256);
+    test_kv_text_stub_file_used(dir, main_text, 0, KV_REASON_EVICT,
+                                2048, 0, now, now, 2048);
+    char *small_path = test_kv_text_path(dir, small_text);
+    char *main_path = test_kv_text_path(dir, main_text);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+    uint64_t incoming_bytes =
+        KV_CACHE_FIXED_HEADER + 4u + strlen(sub_text) + 2048u;
+    kc.budget_bytes =
+        incoming_bytes + KV_CACHE_FIXED_HEADER + 4u + strlen(main_text) + 2047u;
+    ds4_kvstore_eviction_context incoming = {
+        .text = sub_text,
+        .text_len = strlen(sub_text),
+        .model_id = 0,
+        .quant_bits = 2,
+        .ctx_size = 32768,
+        .reject_different_quant = false,
+        .protect_text = "main agent transcript\nuser: subagent result",
+    };
+    /* Even deleting every other entry cannot make room next to the
+     * protected checkpoint: report failure and delete nothing. */
+    const uint64_t bytes_before = test_kv_dir_bytes(dir);
+    TEST_ASSERT(!kv_cache_evict(&kc, NULL, incoming_bytes, &incoming));
+    TEST_ASSERT(test_kv_dir_bytes(dir) == bytes_before);
+    TEST_ASSERT(access(main_path, F_OK) == 0);
+    TEST_ASSERT(access(small_path, F_OK) == 0);
+
+    kv_cache_close(&kc);
+    unlink(small_path);
+    unlink(main_path);
+    free(small_path);
+    free(main_path);
+    rmdir(dir);
+}
+
 static void test_kv_cache_eviction_keeps_aligned_continued_frontiers(void) {
     char tmpl[] = "/tmp/ds4-kv-live-prefix-test.XXXXXX";
     char *dir = mkdtemp(tmpl);
