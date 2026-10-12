@@ -86,6 +86,9 @@ typedef struct {
     uint8_t quant_bits;
     uint32_t ctx_size;
     bool reject_different_quant;
+    /* Prompt text of the request that will load from disk right after this
+     * store.  The checkpoint it would load is never chosen as a victim. */
+    const char *protect_text;
 } ds4_kvstore_eviction_context;
 
 typedef struct {
