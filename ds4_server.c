@@ -11298,11 +11298,14 @@ static bool kv_cache_store_live_prefix(server *s, server_slot *slot,
                                        const ds4_tokens *tokens,
                                        int store_len, const char *reason) {
     return kv_cache_store_live_prefix_text(s, slot, tokens, store_len, reason,
-                                           NULL, 0, NULL);
+                                           NULL, 0, NULL, NULL);
 }
 
+/* protect_text is the prompt about to be looked up on disk, if any: storing
+ * the outgoing checkpoint must not evict the one that request will load. */
 static void kv_cache_store_current(server *s, server_slot *slot,
-                                   const char *reason) {
+                                   const char *reason,
+                                   const char *protect_text) {
     if (!s || !slot) return;
     const ds4_tokens *tokens = ds4_session_tokens(slot->session);
     if (!tokens) return;
